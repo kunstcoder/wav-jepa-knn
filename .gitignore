@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Build/test artifacts
+.pytest_cache/
+.mypy_cache/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Local data/checkpoints
+data/
+checkpoints/
+*.ckpt
