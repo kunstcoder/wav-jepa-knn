@@ -71,3 +71,17 @@ test/f1_macro: 0.7988
 
 - 내부 클래스 구현은 HF custom code를 단순화해 옮긴 버전입니다.
 - `config.json`/`safetensors`의 구조 차이가 큰 경우 로딩이 실패할 수 있습니다.
+
+
+## 7) 자주 발생하는 오류
+
+### `WavJEPA 형태의 가중치로 보이지 않습니다. state_dict key 예시: ...`
+
+이 메시지는 보통 아래 경우입니다.
+
+- `model.safetensors.index.json`이 있는데 shard 파일 일부가 없는 경우
+- state_dict key에 `model.`/`module.` 같은 prefix가 붙은 체크포인트를 로더가 제대로 정규화하지 못한 경우
+- `config.json`과 safetensors가 서로 다른 모델 버전인 경우
+
+현재 로더는 shard index(`model.safetensors.index.json`)와 prefix 제거(`model.`, `module.`, `wavjepa.` 등)를 지원합니다.
+그래도 실패하면, 출력된 key 예시를 기준으로 실제 prefix 패턴을 추가해야 합니다.

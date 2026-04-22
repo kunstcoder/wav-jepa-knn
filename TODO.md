@@ -3,6 +3,7 @@
 - [x] 데이터셋 폴더 구조(train/test, wav+json)에 맞는 로더 구현
 - [x] HF remote code를 로드하지 않는 로컬 클래스 기반 로더 구현 (`local_wavjepa.py`)
 - [x] 로컬 `config.json` + `*.safetensors` 로딩 구현
+- [x] safetensors shard index(`model.safetensors.index.json`) 및 key prefix 정규화 지원
 - [x] 임베딩 벡터 기반 cosine kNN 분류 및 Acc/F1 측정 구현
 - [x] 최소 코드 형태로 단일 스크립트 작성 (`knn_eval.py`)
 - [x] 실행 방법 문서화 (`README.md`)

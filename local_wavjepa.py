@@ -2,7 +2,7 @@
 
 목표:
 - HF remote code를 런타임에 불러오지 않음
-- 로컬 config.json + model.safetensors 기반으로 임베딩 추출
+- 로컬 config.json + safetensors 기반으로 임베딩 추출
 """
 
 from __future__ import annotations
@@ -77,7 +77,6 @@ class ConvFeatureExtractor(nn.Module):
     def __init__(self, conv_layers_spec: list[tuple[int, int, int]], in_channels: int = 1, dropout: float = 0.0):
         super().__init__()
         self.in_channels = in_channels
-        self.conv_layers_spec = conv_layers_spec
         layers: list[nn.Module] = []
         in_d = in_channels
         for i, (dim, kernel, stride) in enumerate(conv_layers_spec):
@@ -91,13 +90,11 @@ class ConvFeatureExtractor(nn.Module):
         self.embedding_dim = conv_layers_spec[-1][0]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.cnn(x)
-        return x.transpose(1, 2)
+        return self.cnn(x).transpose(1, 2)
 
     def total_patches(self, time: int) -> int:
         x = torch.zeros((1, self.in_channels, time), device=next(self.parameters()).device)
-        x = self.cnn(x)
-        return x.shape[-1]
+        return self.cnn(x).shape[-1]
 
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim: int, positions: np.ndarray) -> np.ndarray:
@@ -106,9 +103,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim: int, positions: np.ndarray) -> 
     omega /= embed_dim / 2.0
     omega = 1.0 / (10000**omega)
     out = np.einsum("m,d->md", positions, omega)
-    emb_sin = np.sin(out)
-    emb_cos = np.cos(out)
-    return np.concatenate([emb_sin, emb_cos], axis=1)
+    return np.concatenate([np.sin(out), np.cos(out)], axis=1)
 
 
 class WavJEPA(nn.Module):
@@ -118,8 +113,7 @@ class WavJEPA(nn.Module):
     def __init__(self, cfg: dict[str, Any]):
         super().__init__()
         conv_spec = [tuple(x) for x in cfg.get("conv_layers_spec", [[384, 8, 8], [384, 8, 8]])]
-        in_channels = int(cfg.get("in_channels", 1))
-        self.extract_audio = ConvFeatureExtractor(conv_spec, in_channels=in_channels, dropout=float(cfg.get("conv_dropout", 0.0)))
+        self.extract_audio = ConvFeatureExtractor(conv_spec, in_channels=int(cfg.get("in_channels", 1)), dropout=float(cfg.get("conv_dropout", 0.0)))
         self.feature_norms = nn.LayerNorm(self.extract_audio.embedding_dim)
 
         d_model = int(cfg.get("encoder_d_model", cfg.get("hidden_size", 768)))
@@ -162,9 +156,7 @@ class WavJEPA(nn.Module):
             raise ValueError("audio input tensor must be 3D with shape (B, C, T)")
 
         batch_size = audio.shape[0]
-        input_audio_len = audio.shape[-1]
-        cur_frames = input_audio_len
-        pad_frames = self.target_length - (cur_frames % self.target_length)
+        pad_frames = self.target_length - (audio.shape[-1] % self.target_length)
         if pad_frames > 0 and pad_frames < self.target_length:
             audio = torch.nn.functional.pad(audio, (0, pad_frames), mode="constant")
         else:
@@ -182,8 +174,7 @@ class WavJEPA(nn.Module):
 
         embeddings = []
         mask_idx = 0
-        num_chunks = audio.shape[-1] // self.target_length
-        for i in range(num_chunks):
+        for i in range(audio.shape[-1] // self.target_length):
             chunk = audio[..., i * self.target_length : (i + 1) * self.target_length]
             mask = padding_mask[..., mask_idx : mask_idx + self.output_steps]
             embedding = self._get_segment_representation(normalize(chunk), mask)
@@ -191,8 +182,7 @@ class WavJEPA(nn.Module):
             embeddings.append(embedding)
 
         x = torch.hstack(embeddings)
-        x = x[:, :cut_off, :]
-        return x, None
+        return x[:, :cut_off, :], None
 
 
 class LocalWavJEPAInference(nn.Module):
@@ -204,11 +194,52 @@ class LocalWavJEPAInference(nn.Module):
         return self.model.get_audio_representation(input_values)
 
 
-def _pick_weights_file(model_dir: Path) -> Path:
-    candidates = sorted(model_dir.glob("*.safetensors"))
-    if not candidates:
+def _find_weight_files(model_dir: Path) -> list[Path]:
+    index_json = model_dir / "model.safetensors.index.json"
+    if index_json.exists():
+        index_data = json.loads(index_json.read_text(encoding="utf-8"))
+        weight_map = index_data.get("weight_map", {})
+        shard_names = sorted(set(weight_map.values()))
+        shards = [model_dir / name for name in shard_names]
+        missing = [p for p in shards if not p.exists()]
+        if missing:
+            raise FileNotFoundError(f"index에 명시된 shard 파일이 없습니다: {missing[:3]}")
+        return shards
+
+    files = sorted(model_dir.glob("*.safetensors"))
+    if not files:
         raise FileNotFoundError(f"safetensors 파일이 없습니다: {model_dir}")
-    return candidates[0]
+    return files
+
+
+def _load_state_dict(model_dir: Path) -> dict[str, torch.Tensor]:
+    merged: dict[str, torch.Tensor] = {}
+    for file in _find_weight_files(model_dir):
+        merged.update(load_file(str(file)))
+    return merged
+
+
+def _strip_common_prefixes(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    prefixes = ["model.", "module.", "wavjepa.", "backbone.", "jepa."]
+    out = {}
+    for k, v in state_dict.items():
+        nk = k
+        changed = True
+        while changed:
+            changed = False
+            for p in prefixes:
+                if nk.startswith(p):
+                    nk = nk[len(p) :]
+                    changed = True
+        out[nk] = v
+    return out
+
+
+def _extract_arch_cfg(raw_cfg: dict[str, Any]) -> dict[str, Any]:
+    for key in ("wavjepa_config", "model_config", "model_args", "config"):
+        if key in raw_cfg and isinstance(raw_cfg[key], dict):
+            return raw_cfg[key]
+    return raw_cfg
 
 
 def load_local_wavjepa(model_dir: Path, device: str):
@@ -216,18 +247,35 @@ def load_local_wavjepa(model_dir: Path, device: str):
     if not config_path.exists():
         raise FileNotFoundError(f"config.json 파일이 없습니다: {config_path}")
 
-    cfg = json.loads(config_path.read_text(encoding="utf-8"))
-    arch_cfg = cfg.get("wavjepa_config", cfg)
+    raw_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    arch_cfg = _extract_arch_cfg(raw_cfg)
 
     model = WavJEPA(arch_cfg)
-    weights_path = _pick_weights_file(model_dir)
-    state_dict = load_file(str(weights_path))
+    raw_state_dict = _load_state_dict(model_dir)
+    state_dict = _strip_common_prefixes(raw_state_dict)
+
+    # startswith('encoder') 대신, key 내 포함 여부로 더 유연하게 판별
+    if not any("encoder" in k for k in state_dict.keys()):
+        preview = list(state_dict.keys())[:10]
+        raise RuntimeError(
+            "WavJEPA 형태의 가중치로 보이지 않습니다. "
+            f"state_dict key 예시: {preview}"
+        )
+
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if not any(k.startswith("encoder") for k in state_dict.keys()):
-        raise RuntimeError("WavJEPA 형태의 가중치가 아닙니다 (encoder 키 없음).")
-    if len(missing) > 200:
-        raise RuntimeError("로딩 실패: config와 safetensors 구조가 크게 다릅니다.")
+
+    # 완전 불일치 상황을 더 명확히 안내
+    if len(missing) > 200 and len(unexpected) > 200:
+        raise RuntimeError(
+            "config/safetensors 구조 불일치가 큽니다. "
+            f"missing={len(missing)}, unexpected={len(unexpected)}"
+        )
 
     model = model.to(device).eval()
     extractor = WavJEPAFeatureExtractor(sampling_rate=16000)
-    return LocalWavJEPAInference(model), extractor, {"missing": len(missing), "unexpected": len(unexpected)}
+    info = {
+        "missing": len(missing),
+        "unexpected": len(unexpected),
+        "num_tensors": len(state_dict),
+    }
+    return LocalWavJEPAInference(model), extractor, info
