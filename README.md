@@ -2,22 +2,17 @@
 
 WavJEPA 임베딩을 추출한 뒤, cosine kNN 분류로 성능(Accuracy/F1)을 측정하는 간단한 평가 스크립트입니다.
 
-이 버전은 **실행 시 HuggingFace 리모트를 참조하지 않도록** 구성되어 있습니다.
-즉, 모델 코드/설정/가중치를 미리 로컬에 복사해 둔 디렉토리만 사용합니다.
+이번 버전은 **HF remote code를 실행 시 내려받지 않고**, 저장소 내부의 클래스(`local_wavjepa.py`)로 모델을 구성해 로컬 `safetensors`를 로드합니다.
 
 ---
 
 ## 1) 데이터셋 포맷
-
-`dataset_root` 아래에 다음 구조가 있어야 합니다.
 
 ```text
 dataset_root/
   train/
     a.wav
     a.json
-    b.wav
-    b.json
     ...
   test/
     x.wav
@@ -25,25 +20,19 @@ dataset_root/
     ...
 ```
 
-- 각 `.wav`와 같은 basename의 `.json` 라벨 파일이 있어야 합니다.
-- 라벨 키는 `label`, `labels`, `class`, `target` 순으로 우선 탐색합니다.
-
 ---
 
 ## 2) 로컬 모델 디렉토리 준비
 
-`--model`로 넘길 경로에 아래 파일들이 있어야 합니다(예시).
+`--model` 경로에는 최소한 아래 파일이 필요합니다.
 
 ```text
 /path/to/local_wavjepa_model/
   config.json
-  model.py                 # HF remote code를 로컬로 복사한 파일
-  feature_extractor.py     # HF remote code를 로컬로 복사한 파일
-  preprocessor_config.json
-  model.safetensors        # 또는 sharded safetensors
+  model.safetensors   # 또는 *.safetensors
 ```
 
-> 핵심: `model.safetensors`만 있는 것이 아니라, 해당 가중치를 읽을 모델 코드(`model.py` 등)도 로컬에 있어야 합니다.
+> 참고: 모델 구조는 `local_wavjepa.py`의 `WavJEPA`, `ConvFeatureExtractor`, `WavJEPAFeatureExtractor` 클래스로 내부 구현되어 있습니다.
 
 ---
 
@@ -55,7 +44,7 @@ pip install -r requirements.txt
 
 ---
 
-## 4) 실행 (오프라인/로컬 전용)
+## 4) 실행
 
 ```bash
 python knn_eval.py \
@@ -64,20 +53,21 @@ python knn_eval.py \
   --k 20
 ```
 
-- 스크립트 내부에서 `local_files_only=True`와 `TRANSFORMERS_OFFLINE=1`을 사용하므로 원격 HF 조회를 피합니다.
+실행 시 모델 로드 정보(`missing/unexpected`)가 먼저 출력됩니다.
 
 ---
 
 ## 5) 출력 예시
 
 ```text
+model load info: missing=12, unexpected=0
 test/acc: 0.8123
 test/f1_macro: 0.7988
 ```
 
 ---
 
-## 6) 참고
+## 6) 주의사항
 
-- 임베딩은 마지막 hidden state를 mean pooling 해서 사용합니다.
-- 분류기는 `KNeighborsClassifier(metric="cosine")`를 사용합니다.
+- 내부 클래스 구현은 HF custom code를 단순화해 옮긴 버전입니다.
+- `config.json`/`safetensors`의 구조 차이가 큰 경우 로딩이 실패할 수 있습니다.

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """WavJEPA 임베딩 벡터 기반 kNN 성능 측정 스크립트.
 
-HuggingFace 인터페이스(AutoModel + AutoFeatureExtractor) 기준으로 동작합니다.
+HuggingFace 리모트 코드를 런타임에 참조하지 않고,
+로컬 safetensors + 내부 구현 클래스(local_wavjepa.py)로 동작합니다.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -17,14 +17,15 @@ import torchaudio
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.neighbors import KNeighborsClassifier
 from tqdm import tqdm
-from transformers import AutoFeatureExtractor, AutoModel
+
+from local_wavjepa import load_local_wavjepa
 
 
 # -------- I/O --------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset_root", type=Path, required=True)
-    p.add_argument("--model", type=Path, required=True, help="로컬 HF 모델 디렉토리(코드+config+safetensors)")
+    p.add_argument("--model", type=Path, required=True, help="로컬 모델 디렉토리(config.json + *.safetensors)")
     p.add_argument("--k", type=int, default=20)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
@@ -68,16 +69,12 @@ def get_embedding(model, extractor, wav_path: Path, device: str) -> np.ndarray:
         sampling_rate=sr,
         return_tensors="pt",
     )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    input_values = inputs["input_values"].to(device)
 
     with torch.no_grad():
-        out = model(**inputs)
+        out = model(input_values)
 
-    if isinstance(out, tuple):
-        feat = out[0]
-    else:
-        feat = out.last_hidden_state if hasattr(out, "last_hidden_state") else out[0]
-
+    feat = out[0] if isinstance(out, tuple) else out
     if feat.ndim == 3:
         feat = feat.mean(dim=1)
 
@@ -101,18 +98,8 @@ def main() -> None:
     if not args.model.exists():
         raise FileNotFoundError(f"모델 디렉토리가 없습니다: {args.model}")
 
-    # 로컬에 복사된 코드/가중치만 사용 (원격 HF 참조 금지)
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    model = AutoModel.from_pretrained(
-        args.model,
-        trust_remote_code=True,
-        local_files_only=True,
-    ).to(args.device).eval()
-    extractor = AutoFeatureExtractor.from_pretrained(
-        args.model,
-        trust_remote_code=True,
-        local_files_only=True,
-    )
+    model, extractor, load_info = load_local_wavjepa(args.model, args.device)
+    print(f"model load info: missing={load_info['missing']}, unexpected={load_info['unexpected']}")
 
     x_train, y_train = extract_split_embeddings(model, extractor, train_items, args.device)
     x_test, y_test = extract_split_embeddings(model, extractor, test_items, args.device)
