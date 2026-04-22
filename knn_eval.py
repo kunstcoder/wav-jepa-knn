@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,7 @@ from transformers import AutoFeatureExtractor, AutoModel
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--dataset_root", type=Path, required=True)
-    p.add_argument("--model", type=str, required=True, help="HF repo id 또는 로컬 HF 모델 디렉토리")
+    p.add_argument("--model", type=Path, required=True, help="로컬 HF 모델 디렉토리(코드+config+safetensors)")
     p.add_argument("--k", type=int, default=20)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
@@ -97,8 +98,21 @@ def main() -> None:
     train_items = load_split(args.dataset_root / "train")
     test_items = load_split(args.dataset_root / "test")
 
-    model = AutoModel.from_pretrained(args.model, trust_remote_code=True).to(args.device).eval()
-    extractor = AutoFeatureExtractor.from_pretrained(args.model, trust_remote_code=True)
+    if not args.model.exists():
+        raise FileNotFoundError(f"모델 디렉토리가 없습니다: {args.model}")
+
+    # 로컬에 복사된 코드/가중치만 사용 (원격 HF 참조 금지)
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    model = AutoModel.from_pretrained(
+        args.model,
+        trust_remote_code=True,
+        local_files_only=True,
+    ).to(args.device).eval()
+    extractor = AutoFeatureExtractor.from_pretrained(
+        args.model,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
 
     x_train, y_train = extract_split_embeddings(model, extractor, train_items, args.device)
     x_test, y_test = extract_split_embeddings(model, extractor, test_items, args.device)

@@ -2,7 +2,8 @@
 
 WavJEPA 임베딩을 추출한 뒤, cosine kNN 분류로 성능(Accuracy/F1)을 측정하는 간단한 평가 스크립트입니다.
 
-현재 구현은 **HuggingFace 인터페이스 기준**으로 동작합니다.
+이 버전은 **실행 시 HuggingFace 리모트를 참조하지 않도록** 구성되어 있습니다.
+즉, 모델 코드/설정/가중치를 미리 로컬에 복사해 둔 디렉토리만 사용합니다.
 
 ---
 
@@ -29,7 +30,24 @@ dataset_root/
 
 ---
 
-## 2) 설치
+## 2) 로컬 모델 디렉토리 준비
+
+`--model`로 넘길 경로에 아래 파일들이 있어야 합니다(예시).
+
+```text
+/path/to/local_wavjepa_model/
+  config.json
+  model.py                 # HF remote code를 로컬로 복사한 파일
+  feature_extractor.py     # HF remote code를 로컬로 복사한 파일
+  preprocessor_config.json
+  model.safetensors        # 또는 sharded safetensors
+```
+
+> 핵심: `model.safetensors`만 있는 것이 아니라, 해당 가중치를 읽을 모델 코드(`model.py` 등)도 로컬에 있어야 합니다.
+
+---
+
+## 3) 설치
 
 ```bash
 pip install -r requirements.txt
@@ -37,21 +55,20 @@ pip install -r requirements.txt
 
 ---
 
-## 3) 실행
+## 4) 실행 (오프라인/로컬 전용)
 
 ```bash
 python knn_eval.py \
   --dataset_root /path/to/dataset \
-  --model labhamlet/wavjepa-base \
+  --model /path/to/local_wavjepa_model \
   --k 20
 ```
 
-- `--model`: HuggingFace 모델 ID 또는 로컬 HF 모델 디렉토리
-- `--device`: 기본값은 CUDA 사용 가능 시 `cuda`, 아니면 `cpu`
+- 스크립트 내부에서 `local_files_only=True`와 `TRANSFORMERS_OFFLINE=1`을 사용하므로 원격 HF 조회를 피합니다.
 
 ---
 
-## 4) 출력 예시
+## 5) 출력 예시
 
 ```text
 test/acc: 0.8123
@@ -60,7 +77,7 @@ test/f1_macro: 0.7988
 
 ---
 
-## 5) 참고
+## 6) 참고
 
 - 임베딩은 마지막 hidden state를 mean pooling 해서 사용합니다.
 - 분류기는 `KNeighborsClassifier(metric="cosine")`를 사용합니다.
