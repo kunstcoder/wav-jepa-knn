@@ -21,3 +21,11 @@ python knn_eval.py \
 - 이번 버전은 WavJEPA README의 추론 패턴과 동일하게 `extractor(audio) -> model(**inputs)` 흐름을 사용.
 - 즉, 임베딩 추출 경로를 단순화해 "짧지만 실제 인터페이스와 맞는" 코드로 정리함.
 - 학습 ckpt가 HuggingFace 형식이 아니라면(예: Lightning raw ckpt), 먼저 HF 로딩 가능 형태로 변환/내보내기가 필요할 수 있음.
+
+---
+
+## 추가 작업 (요청 반영)
+
+- [x] `requirements.txt` 추가
+- [x] `.gitignore` 추가
+- [x] `CODEX_RULES.md` 추가
