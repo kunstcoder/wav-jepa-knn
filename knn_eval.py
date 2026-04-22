@@ -99,7 +99,12 @@ def main() -> None:
         raise FileNotFoundError(f"모델 디렉토리가 없습니다: {args.model}")
 
     model, extractor, load_info = load_local_wavjepa(args.model, args.device)
-    print(f"model load info: missing={load_info['missing']}, unexpected={load_info['unexpected']}")
+    print(
+        f"model load info: missing={load_info['missing']}, unexpected={load_info['unexpected']}, "
+        f"shape_mismatch={load_info['shape_mismatch']}, num_tensors={load_info['num_tensors']}"
+    )
+    if load_info['shape_mismatch_examples']:
+        print(f"shape mismatch examples: {load_info['shape_mismatch_examples']}")
 
     x_train, y_train = extract_split_embeddings(model, extractor, train_items, args.device)
     x_test, y_test = extract_split_embeddings(model, extractor, test_items, args.device)

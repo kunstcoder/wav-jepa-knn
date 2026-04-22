@@ -73,6 +73,18 @@ test/f1_macro: 0.7988
 - `config.json`/`safetensors`의 구조 차이가 큰 경우 로딩이 실패할 수 있습니다.
 
 
+
+
+### 왜 shape mismatch가 났나?
+
+HF `wavjepa-base`의 `config.json`을 보면 extractor/encoder 구조가 명시되어 있습니다.
+예를 들어 extractor는 `conv_layers_spec = "[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)]"`,
+encoder는 `d_model=768`, `nhead=12`, `num_layers=12` 입니다.
+내부 구현이 이 구조(특히 conv spec/차원)와 다르면 `load_state_dict`에서 shape mismatch가 발생합니다.
+
+현재 로더는 config의 `extractor_config`, `encoder_layers_cfg`, `encoder_cfg`를 우선 반영하고,
+shape 불일치 텐서는 스킵한 뒤 개수/예시를 출력합니다.
+
 ## 7) 자주 발생하는 오류
 
 ### `WavJEPA 형태의 가중치로 보이지 않습니다. state_dict key 예시: ...`

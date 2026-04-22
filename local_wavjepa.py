@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from typing import Any
@@ -74,18 +75,50 @@ class WavJEPAFeatureExtractor(SequenceFeatureExtractor):
 
 
 class ConvFeatureExtractor(nn.Module):
-    def __init__(self, conv_layers_spec: list[tuple[int, int, int]], in_channels: int = 1, dropout: float = 0.0):
+    def __init__(
+        self,
+        conv_layers_spec: list[tuple[int, int, int]],
+        in_channels: int = 1,
+        dropout: float = 0.0,
+        mode: str = "default",
+        conv_bias: bool = False,
+        depthwise: bool = False,
+    ):
         super().__init__()
+        assert mode in {"default", "layer_norm"}
         self.in_channels = in_channels
+
+        def block(n_in: int, n_out: int, k: int, stride: int, is_layer_norm: bool, is_group_norm: bool):
+            groups = n_in if depthwise else 1
+            conv = nn.Conv1d(n_in, n_out, k, stride=stride, bias=conv_bias, groups=groups)
+            nn.init.kaiming_normal_(conv.weight)
+
+            if is_layer_norm:
+                return nn.Sequential(
+                    conv,
+                    nn.Dropout(p=dropout),
+                    nn.Sequential(
+                        nn.Lambda(lambda t: t.transpose(1, 2)),
+                        nn.LayerNorm(n_out, elementwise_affine=True),
+                        nn.Lambda(lambda t: t.transpose(1, 2)),
+                    ),
+                    nn.GELU(),
+                )
+            if is_group_norm:
+                return nn.Sequential(conv, nn.Dropout(p=dropout), nn.GroupNorm(n_out, n_out, affine=True), nn.GELU())
+            return nn.Sequential(conv, nn.Dropout(p=dropout), nn.GELU())
+
         layers: list[nn.Module] = []
         in_d = in_channels
         for i, (dim, kernel, stride) in enumerate(conv_layers_spec):
-            block = [nn.Conv1d(in_d, dim, kernel, stride=stride, bias=False), nn.Dropout(p=dropout)]
-            if i == 0:
-                block.append(nn.GroupNorm(dim, dim, affine=True))
-            block.append(nn.GELU())
-            layers.append(nn.Sequential(*block))
+            is_layer_norm = mode == "layer_norm"
+            is_group_norm = mode == "default" and i == 0
+            if is_layer_norm:
+                # nn.Lambda가 없으므로 layer_norm 모드는 현재 지원하지 않음
+                raise NotImplementedError("mode=layer_norm 은 현재 미지원입니다.")
+            layers.append(block(in_d, dim, kernel, stride, is_layer_norm, is_group_norm))
             in_d = dim
+
         self.cnn = nn.Sequential(*layers)
         self.embedding_dim = conv_layers_spec[-1][0]
 
@@ -112,14 +145,27 @@ class WavJEPA(nn.Module):
 
     def __init__(self, cfg: dict[str, Any]):
         super().__init__()
-        conv_spec = [tuple(x) for x in cfg.get("conv_layers_spec", [[384, 8, 8], [384, 8, 8]])]
-        self.extract_audio = ConvFeatureExtractor(conv_spec, in_channels=int(cfg.get("in_channels", 1)), dropout=float(cfg.get("conv_dropout", 0.0)))
+        extractor_cfg = cfg.get("extractor_config", {})
+        conv_raw = extractor_cfg.get("conv_layers_spec", cfg.get("conv_layers_spec", [[512, 10, 5], [512, 3, 2], [512, 3, 2], [512, 3, 2], [512, 3, 2], [512, 2, 2]]))
+        conv_spec = ast.literal_eval(conv_raw) if isinstance(conv_raw, str) else conv_raw
+        conv_spec = [tuple(x) for x in conv_spec]
+
+        self.extract_audio = ConvFeatureExtractor(
+            conv_spec,
+            in_channels=int(extractor_cfg.get("in_channels", cfg.get("in_channels", 1))),
+            dropout=float(extractor_cfg.get("dropout", cfg.get("conv_dropout", 0.0))),
+            mode=extractor_cfg.get("mode", "default"),
+            conv_bias=bool(extractor_cfg.get("conv_bias", False)),
+            depthwise=bool(extractor_cfg.get("depthwise", False)),
+        )
         self.feature_norms = nn.LayerNorm(self.extract_audio.embedding_dim)
 
-        d_model = int(cfg.get("encoder_d_model", cfg.get("hidden_size", 768)))
-        nhead = int(cfg.get("encoder_nhead", 12))
-        enc_layers = int(cfg.get("encoder_num_layers", 12))
-        ff = int(cfg.get("encoder_dim_feedforward", d_model * 4))
+        enc_layers_cfg = cfg.get("encoder_layers_cfg", {})
+        enc_cfg = cfg.get("encoder_cfg", {})
+        d_model = int(enc_layers_cfg.get("d_model", cfg.get("encoder_d_model", cfg.get("hidden_size", 768))))
+        nhead = int(enc_layers_cfg.get("nhead", cfg.get("encoder_nhead", 12)))
+        ff = int(enc_layers_cfg.get("dim_feedforward", cfg.get("encoder_dim_feedforward", d_model * 4)))
+        enc_layers = int(enc_cfg.get("num_layers", cfg.get("encoder_num_layers", 12)))
 
         self.post_extraction_mapper = nn.Linear(self.extract_audio.embedding_dim, d_model) if self.extract_audio.embedding_dim != d_model else None
         enc_layer = nn.TransformerEncoderLayer(
@@ -262,7 +308,16 @@ def load_local_wavjepa(model_dir: Path, device: str):
             f"state_dict key 예시: {preview}"
         )
 
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    model_state = model.state_dict()
+    filtered_state_dict = {}
+    shape_mismatch = []
+    for k, v in state_dict.items():
+        if k in model_state and model_state[k].shape != v.shape:
+            shape_mismatch.append((k, tuple(v.shape), tuple(model_state[k].shape)))
+            continue
+        filtered_state_dict[k] = v
+
+    missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
 
     # 완전 불일치 상황을 더 명확히 안내
     if len(missing) > 200 and len(unexpected) > 200:
@@ -277,5 +332,7 @@ def load_local_wavjepa(model_dir: Path, device: str):
         "missing": len(missing),
         "unexpected": len(unexpected),
         "num_tensors": len(state_dict),
+        "shape_mismatch": len(shape_mismatch),
+        "shape_mismatch_examples": shape_mismatch[:5],
     }
     return LocalWavJEPAInference(model), extractor, info
