@@ -2,5 +2,6 @@ numpy
 torch
 torchaudio
 transformers
+safetensors
 scikit-learn
 tqdm
